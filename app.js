@@ -48,7 +48,8 @@ function render() {
 }
 function stopPlayback() { if(state.playback) clearInterval(state.playback);state.playback=null;render(); }
 function switchView(view) {
-  if(state.view!==view) stopPlayback();
+  const changed=state.view!==view;
+  if(changed) stopPlayback();
   state.view=view;
   document.querySelectorAll('.view').forEach(el=>{el.hidden=el.id!==`view-${view}`;});
   document.querySelectorAll('.module-tab').forEach(button=>{
@@ -57,6 +58,7 @@ function switchView(view) {
     if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
   });
   render();
+  if(changed) window.scrollTo({top:0,behavior:'auto'});
 }
 for(const id of ['prediction-times','planning-times']) {
   times.forEach((time,index)=>{
