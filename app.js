@@ -24,7 +24,6 @@ function render() {
   const prediction=official?root+`prediction-${n}.png`:state.custom.prediction[state.time];
   const gt=official?root+`gt-${n}.png`:state.custom.gt[state.time];
   const trajectory=official?root+`trajectory-${n}.png`:state.custom.trajectory[state.custom.trajectory.length===1?0:state.time];
-  showImage('input-image',input,official?'官方历史占用观测拼图，非独立 T0 帧':'用户导入的当前环境');
   showImage('prediction-input',input,official?'与预测结果对应的官方历史观测拼图':'用户导入的当前环境');
   showImage('prediction-image',prediction,`${label()} 的 ${official?'官方':'用户导入'}预测占用`);
   showImage('gt-image',gt,`${label()} 的 ${official?'官方':'用户导入'}真实未来占用 GT`);
@@ -37,15 +36,12 @@ function render() {
     button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
   });
   document.querySelectorAll('[data-play]').forEach(button=>button.textContent=state.playback?'暂停':'播放');
-  $('case-name').textContent=official?'官方总览图 · 同一实例':'我的图片案例';
-  $('case-mode').textContent=official?'展示已发表结果，未执行现场推理':'本地图片回放 · 图片不会上传';
-  $('input-title').textContent=official?'观测环境 · 官方历史输入':'当前环境 · 用户图片';
-  $('input-subtitle').textContent=official?'Observations · 原图裁剪':'图片来源与时间对应关系由导入者确认';
-  $('input-note').textContent=official?'原图提供历史观测拼图；未单独发布 T0 帧及场景编号，不将其标为独立当前帧。':'请导入同一实验的当前环境、预测序列、真值序列和轨迹图片。图片仅保留在本次浏览器会话中。';
+  $('case-mode').textContent=['input','training'].includes(state.view)?'训练权重待接入 · 可直接查看预测与规划':official?'预生成结果 · OccWorld 官方示例':'预生成结果 · 本地导入';
+  $('result-name').textContent=official?'OccWorld 官方示例':'我的结果图片';
   $('prediction-input-note').textContent=official?'官方历史观测拼图，与右侧预测和 GT 来自同一总览图。':'请确保三组图片来自同一场景、同一次实验和相同时间范围。';
-  $('prediction-source').textContent=official?'官方已发表图片':'用户导入图片';
+  $('prediction-source').textContent=official?'官方预生成结果':'导入的已有结果';
   $('prediction-note').textContent=official?'图中保留了作者的位移标注与圈注。+3 秒可对比道路和周边车辆的差异；这些差异不等同于本系统计算的评估指标。':'缺少的时间点显示空状态，不用官方案例或示意图填充。页面不计算准确率或轨迹误差。';
-  $('planning-tag').textContent=official?'原图标注累加重绘':'用户提供轨迹图片';
+  $('planning-tag').textContent=official?'临时轨迹示意 · 标注重绘':'已有轨迹结果';
   $('planning-note').textContent=official?'官方未提供该案例独立轨迹图片。此图人工抄录同一总览图的逐步位移，并按官方评估代码的累加方式重绘；数值有舍入，不能用于精确评估或道路碰撞判断。':'轨迹图片由用户提供，页面不从占用图片反推轨迹或重新规划。一张图片时按完整静态轨迹展示，多张时按时间点切换。';
   $('trajectory-subtitle').textContent=official?'辅助重绘 · 非重新推理 · 坐标轴等比例':state.custom.trajectory.length===1?'完整静态轨迹 · 不随时间变化':'按时间点浏览导入图片';
   document.querySelectorAll('.custom-tools').forEach(el=>el.hidden=official);
@@ -60,6 +56,7 @@ function switchView(view) {
     button.classList.toggle('active',active);
     if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
   });
+  render();
 }
 for(const id of ['prediction-times','planning-times']) {
   times.forEach((time,index)=>{
@@ -68,14 +65,15 @@ for(const id of ['prediction-times','planning-times']) {
   });
 }
 document.querySelectorAll('.module-tab').forEach(button=>button.addEventListener('click',()=>switchView(button.dataset.view)));
+document.querySelectorAll('[data-go]').forEach(button=>button.addEventListener('click',()=>switchView(button.dataset.go)));
 document.querySelectorAll('[data-play]').forEach(button=>button.addEventListener('click',()=>{
   if(state.playback){stopPlayback();return;}
   if(state.time===5)state.time=0;
   state.playback=setInterval(()=>{if(state.time===5){stopPlayback();return;}state.time++;render();},1200);render();
 }));
 document.querySelectorAll('[data-next]').forEach(button=>button.addEventListener('click',()=>{stopPlayback();state.time=(state.time+1)%6;render();}));
-$('case-select').addEventListener('change',e=>{stopPlayback();state.case=e.target.value;state.time=0;$('input-feedback').textContent='已切换案例，可确认后浏览其他模块。';$('status').textContent='';render();});
-$('confirm-input').addEventListener('click',()=>{$('input-feedback').textContent=state.case==='custom'&&!state.custom.input.length?'请先导入当前环境图片。':'实例已确认，点击顶部“预测”可查看未来占用。';});
+$('case-select').addEventListener('change',e=>{stopPlayback();state.case=e.target.value;state.time=0;$('status').textContent='';render();});
+$('confirm-input').addEventListener('click',()=>{$('input-feedback').textContent='已保存界面配置。数据读取待接入，可继续查看训练流程或直接进入预测。';});
 function importImages(id,key,max) {
   $(id).addEventListener('change',event=>{
     const files=Array.from(event.target.files);
