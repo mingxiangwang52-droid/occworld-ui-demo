@@ -1,251 +1,111 @@
-const $ = (id) => document.getElementById(id);
-const times = [0.5, 1, 1.5, 2, 2.5, 3];
-const scenes = {
-  junction: { label: '示例 A · 城市路口', short: '城市路口', code: 'A' },
-  arterial: { label: '示例 B · 城市主路', short: '城市主路', code: 'B' },
-  bend: { label: '示例 C · 转弯路段', short: '转弯路段', code: 'C' }
-};
-const state = { view: 'input', scene: 'junction', frame: 8, time: 0, mapMode: 'bev', training: 0, trainingTimer: null, playbackTimer: null, playbackView: null, images: { input: null, training: null, future: [], planning: null } };
-
-function setText(id, value) { $(id).textContent = value; }
-function formatTime(index = state.time) { return `+${times[index].toFixed(1)} s`; }
-function updateLabels() {
-  const scene = scenes[state.scene];
-  setText('context-scene', scene.label);
-  setText('context-frame', `${String(state.frame).padStart(2, '0')} / 24`);
-  setText('input-frame-value', String(state.frame).padStart(2, '0'));
-  setText('scene-id', `DEMO-${scene.code} / ${String(state.frame).padStart(2, '0')}`);
-  setText('scene-time', `T = ${(state.frame * 0.5).toFixed(1)} s`);
-  setText('prediction-scene', scene.label);
-  setText('prediction-frame', String(state.frame).padStart(2, '0'));
-  setText('planning-scene', scene.label);
-  setText('future-time-chip', formatTime());
-  setText('planning-time-chip', formatTime());
-  setText('prediction-time-detail', formatTime());
-  setText('planning-time-detail', formatTime());
-  const turn = state.scene === 'bend' ? 1 : state.scene === 'junction' ? -0.35 : 0;
-  setText('planning-x', `${(turn * times[state.time] * times[state.time] * 0.85).toFixed(1)} m`);
-  setText('planning-y', `${(times[state.time] * 4.2).toFixed(1)} m`);
-  $('history-strip').replaceChildren(...Array.from({ length: 4 }, (_, i) => {
-    const el = document.createElement('div');
-    el.className = 'history-frame';
-    el.textContent = `T-${3 - i}`;
-    return el;
-  }));
-  for (const id of ['prediction-times', 'planning-times']) {
-    $(id).replaceChildren(...times.map((time, i) => {
-      const button = document.createElement('button');
-      button.className = `time-point${i === state.time ? ' active' : ''}`;
-      button.type = 'button';
-      button.textContent = `+${time.toFixed(1)} s`;
-      button.setAttribute('aria-pressed', String(i === state.time));
-      button.addEventListener('click', () => setTime(i));
-      return button;
-    }));
-  }
+'use strict';
+const $ = id => document.getElementById(id);
+const times = [.5,1,1.5,2,2.5,3];
+const root = 'assets/occworld/instance/';
+const state = { view:'input', case:'official', time:0, playback:null, training:0, trainingTimer:null, custom:{ input:[], prediction:[], gt:[], trajectory:[], training:[] } };
+const label = () => `+${times[state.time].toFixed(1)} s`;
+function showImage(id, source, alt) {
+  const img=$(id);
+  const empty=img.parentElement.querySelector('.empty-image');
+  img.hidden=!source;
+  if(empty) empty.hidden=!!source;
+  if(alt) img.alt=alt;
+  if(source) { if(img.getAttribute('src')!==source) img.src=source; }
+  else img.removeAttribute('src');
 }
-function setTime(index) { state.time = index; updateLabels(); updateFutureImage(); render(); }
-function stopPlayback() {
-  if (state.playbackTimer) clearInterval(state.playbackTimer);
-  state.playbackTimer = null;
-  state.playbackView = null;
-  setText('prediction-play', '播放');
-  setText('planning-play', '播放');
-}
-function play(view) {
-  if (state.playbackTimer) { stopPlayback(); return; }
-  if (state.time === times.length - 1) setTime(0);
-  state.playbackView = view;
-  setText(`${view}-play`, '暂停');
-  state.playbackTimer = setInterval(() => {
-    if (state.time === times.length - 1) { stopPlayback(); return; }
-    setTime(state.time + 1);
-  }, 850);
-}
-function switchView(view) {
-  if (state.playbackView && state.playbackView !== view) stopPlayback();
-  state.view = view;
-  document.querySelectorAll('.module-tab').forEach(button => {
-    const active = button.dataset.view === view;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-current', active ? 'page' : 'false');
-  });
-  document.querySelectorAll('.view').forEach(section => {
-    const active = section.id === `view-${view}`;
-    section.classList.toggle('active', active);
-    section.hidden = !active;
-  });
-  requestAnimationFrame(render);
-}
-
-function sizeCanvas(canvas) {
-  if (!canvas || !canvas.offsetWidth) return null;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = canvas.offsetWidth, height = canvas.offsetHeight;
-  canvas.width = Math.round(width * dpr);
-  canvas.height = Math.round(height * dpr);
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { ctx, width, height };
-}
-function rounded(ctx, x, y, width, height, color, radius = 3) {
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
-  ctx.fill();
-}
-function dot(ctx, x, y, r, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
-function drawScene(id, offset, options = {}) {
-  const sized = sizeCanvas($(id));
-  if (!sized) return;
-  const { ctx, width: w, height: h } = sized;
-  ctx.save(); ctx.scale(w / 640, h / 440);
-  ctx.fillStyle = '#dce8e5'; ctx.fillRect(0, 0, 640, 440);
-  const junction = state.scene === 'junction';
-  const bend = state.scene === 'bend';
-  const road = state.mapMode === 'grid' ? '#b8d5cb' : '#a9c7bf';
-  ctx.fillStyle = road;
-  ctx.fillRect(bend ? 202 : 220, 0, bend ? 252 : 200, 440);
-  if (junction) ctx.fillRect(0, 172, 640, 105);
-  if (bend) {
-    ctx.fillStyle = '#dce8e5';
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(205, 0); ctx.quadraticCurveTo(225, 145, 205, 240); ctx.lineTo(0, 245); ctx.fill();
-  }
-  ctx.strokeStyle = '#eff6ec'; ctx.lineWidth = 2; ctx.setLineDash([12, 13]);
-  for (const x of [270, 370]) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 440); ctx.stroke(); }
-  if (junction) { ctx.beginPath(); ctx.moveTo(0, 224); ctx.lineTo(640, 224); ctx.stroke(); }
-  ctx.setLineDash([]);
-  const blocks = junction ? [[28,22,158,120],[472,20,137,131],[30,300,156,115],[474,301,132,111]] : [[24,25,148,165],[480,22,131,152],[25,267,144,143],[480,270,132,135]];
-  blocks.forEach(([x,y,bh,bw],i) => { rounded(ctx,x,y,bh,bw,'#77918f',5); rounded(ctx,x+9,y+8,bh-18,bw-16,i%2?'#93a9a3':'#859f9a',3); });
-  ctx.strokeStyle = '#ffffff55'; ctx.lineWidth = 1;
-  for (let x=0; x<640; x+=32) { ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,440);ctx.stroke(); }
-  for (let y=0; y<440; y+=32) { ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(640,y);ctx.stroke(); }
-  const t = (offset || 0) + (state.frame - 8) * 0.5;
-  const drift = state.scene === 'bend' ? t * 8 : junction ? -t * 3 : 0;
-  if (options.history) {
-    ctx.strokeStyle = '#5eaaa4'; ctx.lineWidth = 4; ctx.setLineDash([6,6]);
-    ctx.beginPath(); ctx.moveTo(320,420); ctx.lineTo(320,333); ctx.stroke(); ctx.setLineDash([]);
-  }
-  if (options.route) {
-    const turn = state.scene === 'bend' ? 1 : junction ? -0.35 : 0;
-    const points = times.map(time => [320 + turn * time * time * 0.85 * 12, 330 - time * 4.2 * 12]);
-    ctx.strokeStyle = '#f2c35c';ctx.lineWidth = 5;ctx.lineCap = 'round';
-    ctx.beginPath();ctx.moveTo(320,330);
-    points.forEach(([x,y]) => ctx.lineTo(x,y));
-    ctx.stroke();
-    points.forEach(([x,y],i) => dot(ctx,x,y,i===state.time?8:4,i===state.time?'#125e5b':'#ffe7a5'));
-  }
-  const vehicles = [[317+drift,214-t*23],[388,109+t*9],[273,87+t*12],[376,316-t*16],[271,346+t*8]];
-  if (options.occupancy !== false) vehicles.forEach(([x,y],i)=>rounded(ctx,x-9,y-16,18,32,i===0?'#2d7774':'#e78f61',3));
-  rounded(ctx,310,312,20,36,'#185e5b',4);
-  dot(ctx,167,265+t*7,5,'#edbf62');dot(ctx,450,220-t*6,5,'#edbf62');
-  if (state.mapMode === 'grid') {
-    ctx.globalAlpha = .32;
-    for(let x=0;x<640;x+=20) for(let y=0;y<440;y+=20) {ctx.strokeStyle='#fff';ctx.strokeRect(x,y,20,20);}
-    ctx.globalAlpha = 1;
-  }
-  ctx.restore();
-}
+document.querySelectorAll('.case-image img').forEach(img=>img.addEventListener('error',()=>{
+  img.hidden=true;
+  const msg=img.parentElement.querySelector('.empty-image');
+  if(msg){msg.hidden=false;msg.textContent='图片加载失败，请刷新页面或重新导入。';}
+}));
 function render() {
-  drawScene('input-canvas', 0, { history: true });
-  drawScene('prediction-current-canvas', 0, { history: true });
-  drawScene('prediction-future-canvas', times[state.time]);
-  drawScene('planning-canvas', times[state.time], { history: $('show-history').checked, route: $('show-route').checked, occupancy: $('show-occupancy').checked });
+  const official=state.case==='official', n=state.time+1;
+  const input=official?root+'observations.png':state.custom.input[0];
+  const prediction=official?root+`prediction-${n}.png`:state.custom.prediction[state.time];
+  const gt=official?root+`gt-${n}.png`:state.custom.gt[state.time];
+  const trajectory=official?root+`trajectory-${n}.png`:state.custom.trajectory[state.custom.trajectory.length===1?0:state.time];
+  showImage('input-image',input,official?'官方历史占用观测拼图，非独立 T0 帧':'用户导入的当前环境');
+  showImage('prediction-input',input,official?'与预测结果对应的官方历史观测拼图':'用户导入的当前环境');
+  showImage('prediction-image',prediction,`${label()} 的 ${official?'官方':'用户导入'}预测占用`);
+  showImage('gt-image',gt,`${label()} 的 ${official?'官方':'用户导入'}真实未来占用 GT`);
+  showImage('planning-occupancy',prediction,`${label()} 的预测占用`);
+  showImage('trajectory-image',trajectory,official?`${label()} 按官方图中位移标注累加重绘的轨迹`:'用户导入的轨迹图片');
+  $('prediction-time').textContent=label();$('planning-time').textContent=label();
+  document.querySelectorAll('[data-time]').forEach(el=>el.textContent=label());
+  document.querySelectorAll('.time-point').forEach(button=>{
+    const active=Number(button.dataset.index)===state.time;
+    button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
+  });
+  document.querySelectorAll('[data-play]').forEach(button=>button.textContent=state.playback?'暂停':'播放');
+  $('case-name').textContent=official?'官方总览图 · 同一实例':'我的图片案例';
+  $('case-mode').textContent=official?'展示已发表结果，未执行现场推理':'本地图片回放 · 图片不会上传';
+  $('input-title').textContent=official?'观测环境 · 官方历史输入':'当前环境 · 用户图片';
+  $('input-subtitle').textContent=official?'Observations · 原图裁剪':'图片来源与时间对应关系由导入者确认';
+  $('input-note').textContent=official?'原图提供历史观测拼图；未单独发布 T0 帧及场景编号，不将其标为独立当前帧。':'请导入同一实验的当前环境、预测序列、真值序列和轨迹图片。图片仅保留在本次浏览器会话中。';
+  $('prediction-input-note').textContent=official?'官方历史观测拼图，与右侧预测和 GT 来自同一总览图。':'请确保三组图片来自同一场景、同一次实验和相同时间范围。';
+  $('prediction-source').textContent=official?'官方已发表图片':'用户导入图片';
+  $('prediction-note').textContent=official?'图中保留了作者的位移标注与圈注。+3 秒可对比道路和周边车辆的差异；这些差异不等同于本系统计算的评估指标。':'缺少的时间点显示空状态，不用官方案例或示意图填充。页面不计算准确率或轨迹误差。';
+  $('planning-tag').textContent=official?'原图标注累加重绘':'用户提供轨迹图片';
+  $('planning-note').textContent=official?'官方未提供该案例独立轨迹图片。此图人工抄录同一总览图的逐步位移，并按官方评估代码的累加方式重绘；数值有舍入，不能用于精确评估或道路碰撞判断。':'轨迹图片由用户提供，页面不从占用图片反推轨迹或重新规划。一张图片时按完整静态轨迹展示，多张时按时间点切换。';
+  $('trajectory-subtitle').textContent=official?'辅助重绘 · 非重新推理 · 坐标轴等比例':state.custom.trajectory.length===1?'完整静态轨迹 · 不随时间变化':'按时间点浏览导入图片';
+  document.querySelectorAll('.custom-tools').forEach(el=>el.hidden=official);
 }
-function setImage(file, target, key) {
-  if (!file || !file.type.startsWith('image/')) return;
-  if (state.images[key]) URL.revokeObjectURL(state.images[key]);
-  state.images[key] = URL.createObjectURL(file);
-  $(target).src = state.images[key];
-  $(target).hidden = false;
-  if (key === 'input') { $('prediction-current-image').src = state.images[key]; $('prediction-current-image').hidden = false; }
-  if (key === 'training') setText('training-upload-name', file.name);
-  if (key === 'planning') ['show-occupancy','show-route','show-history'].forEach(id => { $(id).disabled = true; });
+function stopPlayback() { if(state.playback) clearInterval(state.playback);state.playback=null;render(); }
+function switchView(view) {
+  if(state.view!==view) stopPlayback();
+  state.view=view;
+  document.querySelectorAll('.view').forEach(el=>{el.hidden=el.id!==`view-${view}`;});
+  document.querySelectorAll('.module-tab').forEach(button=>{
+    const active=button.dataset.view===view;
+    button.classList.toggle('active',active);
+    if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
+  });
 }
-function updateFutureImage() {
-  const image = $('prediction-future-image');
-  const url = state.images.future[state.time];
-  image.hidden = !url;
-  if (url) image.src = url;
-  document.querySelector('#view-prediction .detail-panel .scene-stat:nth-of-type(3) strong').textContent = url ? '本地导入图片' : '前端示意数据';
-  setText('prediction-play-status', url ? `已导入图片 · 第 ${state.time + 1} 张` : state.images.future.length ? '此时间点没有导入图片，显示前端示意' : '前端示意 · 非实时推理');
+for(const id of ['prediction-times','planning-times']) {
+  times.forEach((time,index)=>{
+    const button=document.createElement('button');button.type='button';button.className='time-point';button.dataset.index=String(index);button.textContent=`+${time.toFixed(1)} s`;
+    button.addEventListener('click',()=>{stopPlayback();state.time=index;render();});$(id).append(button);
+  });
 }
-function clearImage(key, targets, input) {
-  if (state.images[key]) URL.revokeObjectURL(state.images[key]);
-  state.images[key] = null;
-  targets.forEach(id => { $(id).hidden = true; $(id).removeAttribute('src'); });
-  $(input).value = '';
-  if (key === 'planning') ['show-occupancy','show-route','show-history'].forEach(id => { $(id).disabled = false; });
-}
-function clearImportedResults() {
-  clearImage('input', ['input-image', 'prediction-current-image'], 'input-upload');
-  clearImage('planning', ['planning-image'], 'planning-upload');
-  state.images.future.forEach(url => URL.revokeObjectURL(url));
-  state.images.future = [];
-  $('future-upload').value = '';
-  updateFutureImage();
-  setText('nav-prediction-state', '待演示');
-  setText('nav-planning-state', '待演示');
-  setText('input-feedback', '输入已更改，请确认当前演示输入。');
-  setText('nav-input-state', '待确认');
-}
-function updateTraining() {
-  const p = Math.round(state.training);
-  $('training-progress').style.width = `${p}%`;
-  setText('training-percent', `${p}%`);
-  const stages = [
-    ['数据准备', '展示数据整理与时序样本准备。'],
-    ['VQVAE 表示学习', '展示三维占用场景的离线编码阶段。'],
-    ['OccWorld 时序训练', '展示未来占用与自车运动建模阶段。'],
-    ['验证与整理', '展示离线验证及产物整理阶段。']
-  ];
-  const index = Math.min(3, Math.floor(p / 25));
-  setText('training-stage-title', p === 0 ? '等待开始' : p === 100 ? '演示完成' : stages[index][0]);
-  setText('training-stage-desc', p === 0 ? '点击下方按钮播放训练阶段，不会启动服务器训练。' : p === 100 ? '训练流程回放结束；此页面尚未接入真实权重。' : stages[index][1]);
-  document.querySelectorAll('#stage-row .stage').forEach((el,i)=>{el.classList.toggle('active',i===index && p<100);el.classList.toggle('done',p===100 || i<index);});
-  setText('nav-training-state', p===100?'回放完成':p>0?(state.trainingTimer?'回放中':'已暂停'):'未播放');
-  setText('start-training', state.trainingTimer?'暂停回放':p===100?'重新播放':'播放训练流程');
-}
-function startTraining() {
-  if (state.trainingTimer) { clearInterval(state.trainingTimer); state.trainingTimer=null; updateTraining(); return; }
-  if (state.training >= 100) state.training=0;
-  state.trainingTimer=setInterval(()=>{
-    state.training=Math.min(100,state.training+1);
-    updateTraining();
-    if(state.training===100){clearInterval(state.trainingTimer);state.trainingTimer=null;updateTraining();}
-  },110);
-  updateTraining();
-}
-
 document.querySelectorAll('.module-tab').forEach(button=>button.addEventListener('click',()=>switchView(button.dataset.view)));
-$('scene-select').addEventListener('change',e=>{state.scene=e.target.value;clearImportedResults();updateLabels();render();});
-$('input-frame').addEventListener('input',e=>{state.frame=Number(e.target.value);clearImportedResults();updateLabels();render();});
-$('confirm-input').addEventListener('click',()=>{setText('input-feedback','已确认当前演示输入。');setText('nav-input-state','已确认');});
-document.querySelectorAll('[data-map-mode]').forEach(button=>button.addEventListener('click',()=>{state.mapMode=button.dataset.mapMode;document.querySelectorAll('[data-map-mode]').forEach(item=>item.classList.toggle('active',item===button));render();}));
-$('start-training').addEventListener('click',startTraining);
-$('reset-training').addEventListener('click',()=>{if(state.trainingTimer)clearInterval(state.trainingTimer);state.trainingTimer=null;state.training=0;updateTraining();});
-$('run-demo').addEventListener('click',()=>{switchView('prediction');setTime(0);setText('prediction-play-status','前端演示序列已加载');setText('nav-prediction-state','演示已加载');play('prediction');});
-$('prediction-play').addEventListener('click',()=>play('prediction'));
-$('planning-play').addEventListener('click',()=>play('planning'));
-$('prediction-next').addEventListener('click',()=>{stopPlayback();setTime((state.time+1)%times.length);});
-$('planning-next').addEventListener('click',()=>{stopPlayback();setTime((state.time+1)%times.length);});
-['show-occupancy','show-route','show-history'].forEach(id=>$(id).addEventListener('change',render));
-$('input-upload').addEventListener('change',e=>setImage(e.target.files[0],'input-image','input'));
-$('training-upload').addEventListener('change',e=>setImage(e.target.files[0],'training-image','training'));
-$('planning-upload').addEventListener('change',e=>setImage(e.target.files[0],'planning-image','planning'));
-$('clear-input-image').addEventListener('click',()=>clearImage('input',['input-image','prediction-current-image'],'input-upload'));
-$('clear-planning-image').addEventListener('click',()=>clearImage('planning',['planning-image'],'planning-upload'));
-$('future-upload').addEventListener('change',e=>{
-  state.images.future.forEach(url=>URL.revokeObjectURL(url));
-  state.images.future=Array.from(e.target.files).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).slice(0,6).map(file=>URL.createObjectURL(file));
-  updateFutureImage();setText('nav-prediction-state',state.images.future.length?'图片已导入':'待演示');
+document.querySelectorAll('[data-play]').forEach(button=>button.addEventListener('click',()=>{
+  if(state.playback){stopPlayback();return;}
+  if(state.time===5)state.time=0;
+  state.playback=setInterval(()=>{if(state.time===5){stopPlayback();return;}state.time++;render();},1200);render();
+}));
+document.querySelectorAll('[data-next]').forEach(button=>button.addEventListener('click',()=>{stopPlayback();state.time=(state.time+1)%6;render();}));
+$('case-select').addEventListener('change',e=>{stopPlayback();state.case=e.target.value;state.time=0;$('input-feedback').textContent='已切换案例，可确认后浏览其他模块。';$('status').textContent='';render();});
+$('confirm-input').addEventListener('click',()=>{$('input-feedback').textContent=state.case==='custom'&&!state.custom.input.length?'请先导入当前环境图片。':'实例已确认，点击顶部“预测”可查看未来占用。';});
+function importImages(id,key,max) {
+  $(id).addEventListener('change',event=>{
+    const files=Array.from(event.target.files);
+    if(!files.length)return;
+    const accepted=files.filter(file=>['image/png','image/jpeg','image/webp'].includes(file.type));
+    if(!accepted.length){$('status').textContent='请选择 PNG、JPG 或 WebP 图片。';return;}
+    if(accepted.some(file=>file.size>20*1024*1024)){$('status').textContent='单张图片请控制在 20 MB 内。';return;}
+    accepted.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+    state.custom[key].forEach(url=>URL.revokeObjectURL(url));
+    state.custom[key]=accepted.slice(0,max).map(file=>URL.createObjectURL(file));
+    $('status').textContent=accepted.length>max?`已读取前 ${max} 张图片，其余未导入。`:`已导入 ${Math.min(max,accepted.length)} 张图片，仅本地展示。`;
+    if(key==='training'){
+      $('training-image').src=state.custom.training[0];$('training-image').hidden=false;$('training-upload-name').textContent=accepted[0].name;
+    }else {stopPlayback();render();}
+  });
+}
+importImages('input-upload','input',1);importImages('future-upload','prediction',6);importImages('gt-upload','gt',6);importImages('planning-upload','trajectory',6);importImages('training-upload','training',1);
+function renderTraining(){
+  const p=state.training,index=Math.min(3,Math.floor(p/25)),names=['数据准备','VQVAE 表示学习','OccWorld 时序训练','验证与整理'];
+  $('training-percent').textContent=p+'%';$('training-progress').style.width=p+'%';$('progress-track').setAttribute('aria-valuenow',String(p));
+  $('training-stage-title').textContent=p===0?'等待开始':p===100?'流程演示完成':names[index];
+  $('training-stage-desc').textContent=p===100?'回放结束，未启动真实训练或加载权重。':'仅演示训练阶段，不生成模型或评估指标。';
+  $('start-training').textContent=state.trainingTimer?'暂停回放':p===100?'重新播放':'播放训练流程';
+  $('training-nav').textContent=p===100?'回放完成':state.trainingTimer?'回放中':p?'已暂停':'流程回放';
+  document.querySelectorAll('.stage').forEach((el,i)=>{el.classList.toggle('active',i===index&&p<100);el.classList.toggle('done',p===100||i<index);});
+}
+$('start-training').addEventListener('click',()=>{
+  if(state.trainingTimer){clearInterval(state.trainingTimer);state.trainingTimer=null;renderTraining();return;}
+  if(state.training===100)state.training=0;
+  state.trainingTimer=setInterval(()=>{state.training++;if(state.training>=100){state.training=100;clearInterval(state.trainingTimer);state.trainingTimer=null;}renderTraining();},110);renderTraining();
 });
-$('clear-future-images').addEventListener('click',()=>{state.images.future.forEach(url=>URL.revokeObjectURL(url));state.images.future=[];$('future-upload').value='';updateFutureImage();setText('nav-prediction-state','待演示');});
-$('download-demo').addEventListener('click',()=>{
-  const trajectory=times.map((time,i)=>({time_s:time,x_m:Number(((state.scene==='bend'?1:state.scene==='junction'?-0.35:0)*time*time*.85).toFixed(2)),y_m:Number((time*4.2).toFixed(2))}));
-  const content={source:'frontend_demo_only',model:'OccWorld (not connected)',scene:state.scene,frame:state.frame,trajectory};
-  const url=URL.createObjectURL(new Blob([JSON.stringify(content,null,2)],{type:'application/json'}));
-  const link=document.createElement('a');link.href=url;link.download=`occworld-demo-${state.scene}-${state.frame}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-});
-window.addEventListener('resize',render);
-updateLabels();updateTraining();switchView('input');
+$('reset-training').addEventListener('click',()=>{clearInterval(state.trainingTimer);state.trainingTimer=null;state.training=0;renderTraining();});
+render();renderTraining();switchView('input');
