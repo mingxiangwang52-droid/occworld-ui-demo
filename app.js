@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const times = [.5,1,1.5,2,2.5,3];
 const root = 'assets/occworld/instance/';
-const state = { view:'input', case:'official', time:0, playback:null, training:0, trainingTimer:null, custom:{ input:[], prediction:[], gt:[], trajectory:[], training:[] } };
+const state = { view:'input', case:'official', time:0, playback:null, training:0, trainingTimer:null, dataset:{ files:[], folder:'' }, custom:{ input:[], prediction:[], gt:[], trajectory:[], training:[] } };
 const label = () => `+${times[state.time].toFixed(1)} s`;
 function showImage(id, source, alt) {
   const img=$(id);
@@ -75,7 +75,28 @@ document.querySelectorAll('[data-play]').forEach(button=>button.addEventListener
 }));
 document.querySelectorAll('[data-next]').forEach(button=>button.addEventListener('click',()=>{stopPlayback();state.time=(state.time+1)%6;render();}));
 $('case-select').addEventListener('change',e=>{stopPlayback();state.case=e.target.value;state.time=0;$('status').textContent='';render();});
-$('confirm-input').addEventListener('click',()=>{$('input-feedback').textContent='已保存界面配置。数据读取待接入，可继续查看训练流程或直接进入预测。';});
+$('confirm-input').addEventListener('click',()=>{$('input-feedback').textContent=state.dataset.files.length?`已保存输入配置，已选择 ${state.dataset.files.length} 个本地文件。可继续查看训练流程或直接进入预测。`:'已保存界面配置。尚未选择本地数据集，可继续查看训练流程或直接进入预测。';});
+function formatBytes(bytes) {
+  if(bytes<1024) return `${bytes} B`;
+  if(bytes<1024*1024) return `${(bytes/1024).toFixed(1)} KB`;
+  if(bytes<1024*1024*1024) return `${(bytes/1024/1024).toFixed(1)} MB`;
+  return `${(bytes/1024/1024/1024).toFixed(2)} GB`;
+}
+function renderDatasetSummary() {
+  const summary=$('dataset-summary');
+  if(!state.dataset.files.length){summary.textContent='尚未选择本地数据集';return;}
+  const folders=state.dataset.files.map(file=>file.webkitRelativePath||file.name).filter(path=>path.includes('/')).map(path=>path.split('/')[0]);
+  const folder=folders[0]||'已选文件';
+  const bytes=state.dataset.files.reduce((total,file)=>total+file.size,0);
+  const extensions=new Set(state.dataset.files.map(file=>{const parts=file.name.toLowerCase().split('.');return parts.length>1?parts.pop():'无扩展名';}));
+  summary.textContent=`${folder} · ${state.dataset.files.length} 个文件 · ${formatBytes(bytes)} · ${[...extensions].slice(0,4).join(', ')}`;
+}
+$( 'dataset-upload').addEventListener('change',event=>{
+  state.dataset.files=Array.from(event.target.files||[]);
+  renderDatasetSummary();
+  $('status').textContent=state.dataset.files.length?`已选择本地数据集：${state.dataset.files.length} 个文件，仅本地展示。`:'未选择本地数据集。';
+  $('input-feedback').textContent=state.dataset.files.length?'本地数据集已加入输入配置，可保存配置。':'尚未选择本地数据集。';
+});
 function importImages(id,key,max) {
   $(id).addEventListener('change',event=>{
     const files=Array.from(event.target.files);
@@ -109,3 +130,4 @@ $('start-training').addEventListener('click',()=>{
 });
 $('reset-training').addEventListener('click',()=>{clearInterval(state.trainingTimer);state.trainingTimer=null;state.training=0;renderTraining();});
 render();renderTraining();switchView('input');
+renderDatasetSummary();
